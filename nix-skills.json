@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "nix-skills-repository",
+  "name": "NIX Ring Light Skill",
+  "description": "A trusted, NIX-managed Echo Dot LED ring control service.",
+  "publisher": "NIX Community Skills",
+  "skills": [
+    {
+      "manifest": "skills/ring-light/skill.json"
+    }
+  ]
+}
