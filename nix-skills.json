@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "nix-skills-repository",
   "name": "NIX Ring Light Skill",
-  "description": "A trusted, NIX-managed Echo Dot LED ring control service.",
+  "description": "A NIX-managed Echo Dot LED ring skill using firmware-reported effects and model-selected RGB colors.",
   "publisher": "NIX Community Skills",
   "skills": [
     {

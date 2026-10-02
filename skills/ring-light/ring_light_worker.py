@@ -21,31 +21,6 @@ import uuid
 from typing import Any
 
 PROTOCOL = "nix-skill-jsonl-v1"
-PALETTES: dict[str, tuple[tuple[int, int, int], ...]] = {
-    "rainbow": ((153, 0, 0), (153, 153, 0), (0, 153, 0), (0, 153, 153), (0, 0, 153), (153, 0, 153)),
-    "aurora": ((0, 200, 80), (0, 176, 176), (48, 64, 192), (112, 32, 160), (16, 144, 128)),
-    "fire": ((255, 224, 160), (255, 144, 32), (208, 48, 0), (64, 4, 0)),
-    "ocean": ((0, 12, 64), (0, 80, 160), (0, 176, 192), (144, 240, 224)),
-    "ice": ((8, 24, 80), (16, 96, 192), (96, 192, 240), (224, 248, 255)),
-    "sunset": ((48, 8, 96), (160, 16, 96), (224, 80, 32), (255, 176, 48)),
-    "forest": ((4, 40, 16), (16, 112, 32), (64, 176, 32), (160, 224, 64)),
-    "crimson": ((40, 0, 4), (128, 0, 8), (208, 0, 20), (255, 64, 72)),
-    "alarm": ((48, 0, 0), (192, 0, 0), (255, 48, 24), (255, 176, 160)),
-    "meter": ((0, 176, 24), (80, 192, 0), (224, 144, 0), (255, 16, 0)),
-    "duo": ((0, 224, 192), (224, 0, 160)),
-    "pacman": ((255, 208, 0), (48, 48, 56)),
-}
-COLOR_NAMES: dict[str, tuple[int, int, int]] = {
-    "red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
-    "white": (255, 255, 255), "warm white": (255, 226, 190), "cool white": (205, 230, 255),
-    "yellow": (255, 255, 0), "orange": (255, 128, 0), "purple": (128, 0, 255),
-    "violet": (148, 0, 211), "pink": (255, 105, 180), "hot pink": (255, 20, 147),
-    "magenta": (255, 0, 255), "cyan": (0, 255, 255), "teal": (0, 180, 160),
-    "turquoise": (64, 224, 208), "lime": (128, 255, 0), "amber": (255, 191, 0),
-    "gold": (255, 215, 0), "lavender": (181, 126, 220), "lilac": (200, 162, 200),
-    "coral": (255, 127, 80), "indigo": (75, 0, 130), "brown": (139, 69, 19),
-}
-ALIASES = {"off white": "warm white", "ice blue": "cool white", "aqua": "cyan", "fuchsia": "magenta"}
 
 
 def _rgb_float(rgb: tuple[int, int, int] | list[int]) -> tuple[float, float, float]:
@@ -64,39 +39,13 @@ def _clamp_brightness(value: Any) -> float:
     return float(value)
 
 
-def _parse_color(value: str) -> tuple[int, int, int] | None:
-    normalized = " ".join(value.casefold().replace("-", " ").split())
-    normalized = ALIASES.get(normalized, normalized)
-    if normalized in COLOR_NAMES:
-        return COLOR_NAMES[normalized]
-    if re.fullmatch(r"#[0-9a-f]{6}", normalized):
-        return tuple(int(normalized[index:index + 2], 16) for index in (1, 3, 5))  # type: ignore[return-value]
-    match = re.fullmatch(r"(?:rgb\s*)?\(?(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\)?", normalized)
-    if match:
-        channels = tuple(int(item) for item in match.groups())
-        if all(0 <= item <= 255 for item in channels):
-            return channels  # type: ignore[return-value]
-    return None
-
-
-def _interpolate(stops: tuple[tuple[int, int, int], ...], count: int = 12) -> list[tuple[int, int, int]]:
-    result = []
-    for index in range(count):
-        position = index / count * len(stops)
-        left_index = int(position) % len(stops)
-        right = stops[(left_index + 1) % len(stops)]
-        left = stops[left_index]
-        fraction = position - int(position)
-        result.append(tuple(round(left[channel] + (right[channel] - left[channel]) * fraction) for channel in range(3)))
-    return result  # type: ignore[return-value]
-
-
 class RingService:
     def __init__(self) -> None:
         self.client: Any = None
         self.ring_key: int | None = None
         self.segment_keys: dict[int, int] = {}
         self.effects: list[str] = []
+        self.device_name = "Echo Dot"
         self.connected = False
         self.state: dict[str, Any] = {"on": False, "brightness": 0.0, "rgb": [0, 0, 0], "effect": "None"}
         self._condition = threading.Condition()
@@ -130,7 +79,10 @@ class RingService:
         )
         try:
             await asyncio.wait_for(self.client.connect(login=True), timeout=15)
-            _device, entities, _services = await asyncio.wait_for(self.client.device_info_and_list_entities(), timeout=15)
+            device, entities, _services = await asyncio.wait_for(self.client.device_info_and_list_entities(), timeout=15)
+            reported_name = getattr(device, "friendly_name", None) or getattr(device, "name", None)
+            if isinstance(reported_name, str) and reported_name.strip():
+                self.device_name = " ".join(reported_name.split())[:80]
             for entity in entities:
                 if not isinstance(entity, aioesphomeapi.LightInfo):
                     continue
@@ -149,9 +101,11 @@ class RingService:
                 raise RuntimeError("Echo Dot ESPHome API connected, but no LED ring light entity was found.")
             self.connected = True
             self.client.subscribe_states(self._on_state)
-            with self._condition:
-                self._revision = 0
             await asyncio.wait_for(self.client.device_info(), timeout=10)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._wait_for_state, 0, lambda _state: True, 5.0),
+                timeout=6,
+            )
             return {"ready": True}
         except Exception:
             self.connected = False
@@ -210,12 +164,6 @@ class RingService:
         elif action == "brightness":
             expected = changes["brightness"]
             predicate = lambda state: abs(state["brightness"] - expected) <= 0.03
-        elif action == "palette":
-            if "effect" in changes:
-                expected = changes["effect"]
-                predicate = lambda state: state["on"] and state["effect"] == expected
-            else:
-                predicate = lambda state: state["on"] and state["effect"] in {"", "None"}
         else:
             predicate = lambda _state: True
         state = self._wait_for_state(before, predicate)
@@ -227,8 +175,8 @@ class RingService:
             "action": action,
             "state": dict(self.state),
             "device_connected": self.connected,
+            "device_name": self.device_name,
             "available_effects": self.effects[:64],
-            "available_palettes": list(PALETTES),
             "message": message[:240],
             **fields,
         }
@@ -238,16 +186,14 @@ class RingService:
         low = clean.casefold()
         if len(clean) > 4000 or not re.search(r"\b(?:ring|echo\s*dot|dot|light|led)\b", low):
             return None
-        if re.search(r"\b(?:what|which|show|list|tell me|available|can|could)\b.*\b(?:effects?|animations?|colors?|colours?)\b", low) and not re.search(r"\b(?:turn|switch|set|make|run|start|play|stop|disable|enable)\b", low):
+        if re.search(r"\b(?:what|which|show|list|tell me|available|can|could)\b.*\b(?:colors?|colours?)\b", low) and not re.search(r"\b(?:turn|switch|set|make|run|start|play|stop|disable|enable)\b", low):
+            return {"action": "color_catalog"}
+        if re.search(r"\b(?:what|which|show|list|tell me|available|can|could)\b.*\b(?:effects?|animations?)\b", low) and not re.search(r"\b(?:turn|switch|set|make|run|start|play|stop|disable|enable)\b", low):
             return {"action": "catalog"}
         if re.search(r"\b(?:state|status|what(?:'s| is) the ring doing|how does the ring look)\b", low):
             return {"action": "state"}
-        if re.search(r"\b(?:stop|turn off|switch off|power off)\b.*\b(?:effect|animation|ring|light|dot)\b", low):
+        if re.search(r"\b(?:stop|turn off|switch off|power off)\b.*\b(?:effect|animation)\b", low):
             return {"action": "effect", "effect": "None"}
-        if re.search(r"\b(?:turn|switch|power)\b.*\b(?:off|down)\b|\b(?:off|disable)\b.*\b(?:ring|light|dot)\b", low):
-            return {"action": "off"}
-        if re.search(r"\b(?:turn|switch|power)\b.*\b(?:on|up)\b|\b(?:on|enable)\b.*\b(?:ring|light|dot)\b", low):
-            return {"action": "on"}
         brightness_match = re.search(r"(?:\b(?:brightness|bright|dim|dimmer)\b[^\d]{0,24}(\d{1,3})\s*(?:%|percent)?|(\d{1,3})\s*(?:%|percent)\s*(?:brightness|bright|dim)?)", low)
         if brightness_match:
             brightness_text = brightness_match.group(1) or brightness_match.group(2)
@@ -255,40 +201,44 @@ class RingService:
             if 0.05 <= value <= 1:
                 return {"action": "brightness", "brightness": value}
         rgb_match = re.search(r"\b(?:rgb|color|colour)\s*\(?\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*\)?", low)
-        color: tuple[int, int, int] | None = None
+        rgb = None
         if rgb_match:
             channels = tuple(int(item) for item in rgb_match.groups())
             if all(channel <= 255 for channel in channels):
-                color = channels  # type: ignore[assignment]
-        if color is None:
+                rgb = list(channels)
+        if rgb is None:
             hex_match = re.search(r"#([0-9a-f]{6})\b", low)
             if hex_match:
                 hex_value = hex_match.group(1)
-                color = tuple(int(hex_value[index:index + 2], 16) for index in (0, 2, 4))  # type: ignore[assignment]
-        if color is None:
-            for name in sorted([*COLOR_NAMES, *ALIASES], key=len, reverse=True):
-                if re.search(rf"\b{re.escape(name)}\b", low):
-                    color = COLOR_NAMES[ALIASES.get(name, name)]
-                    break
-        if color is not None and re.search(r"\b(?:color|colour|rgb|make|turn|set|glow|shine|light|ring|dot)\b", low):
-            return {"action": "color", "rgb": list(color)}
-        for effect in sorted(self.effects, key=len, reverse=True):
-            if effect.casefold() == "none":
-                continue
-            if effect.casefold() in low and re.search(r"\b(?:animation|animate|effect|run|start|play|do|make|set)\b", low):
-                return {"action": "effect", "effect": effect}
-        for palette in sorted(PALETTES, key=len, reverse=True):
-            if re.search(rf"\b{palette}\b", low) and re.search(r"\b(?:palette|gradient|paint|animate|animation|effect|color|colour|look|display|make|set|use)\b", low):
-                animate = bool(re.search(r"\b(?:animate|animation|effect)\b", low))
-                if animate and palette in {"meter"}:
-                    animate = False
-                return {"action": "palette", "palette": palette, "mode": "animate" if animate else "paint"}
+                rgb = [int(hex_value[index:index + 2], 16) for index in (0, 2, 4)]
+        if rgb is not None and re.search(r"\b(?:color|colour|rgb|make|turn|set|glow|shine|light|ring|dot)\b", low):
+            return {"action": "color", "rgb": rgb}
+        has_effect_intent = bool(re.search(r"\b(?:animation|animate|effect)\b", low))
+        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:off|down)\b|\b(?:turn|switch|power)\s+(?:off|down)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:off|disable)\b.*\b(?:ring|light|dot)\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent:
+            return {"action": "off"}
+        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:on|up)\b|\b(?:turn|switch|power)\s+(?:on|up)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:on|enable)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent and not re.search(r"\b(?:run|start|play|animate)\b", low):
+            return {"action": "on"}
+        effect_request = low
+        for marker in (" on the echo dot ring", " on echo dot ring", " on the dot ring", " on dot ring", " on the ring", " on ring"):
+            if effect_request.endswith(marker):
+                effect_request = effect_request[:-len(marker)].strip()
+                break
+        for prefix in ("run ", "start ", "play ", "animate ", "animation ", "effect ", "set ", "do ", "make ", "run the ", "play the ", "start the "):
+            if effect_request.startswith(prefix):
+                effect_request = effect_request[len(prefix):].strip()
+                break
+        effect_request = effect_request.strip(" \"'`.,!?;:")
+        effect = next((item for item in sorted(self.effects, key=len, reverse=True) if effect_request == item.casefold()), None)
+        if effect and effect.casefold() != "none":
+            return {"action": "effect", "effect": effect}
         return None
 
     async def _execute(self, args: dict[str, Any]) -> dict[str, Any]:
         action = args.get("action")
         if action == "catalog":
-            return self._result(action, "The Echo Dot's live effect catalog and supported palettes are listed.")
+            return self._result(action, "The connected Echo Dot's firmware effect catalog is available.")
+        if action == "color_catalog":
+            return self._result(action, "The Dot does not publish a finite named-color list; Luna chooses RGB channels for each color description, and any integer RGB triplet from 0 through 255 is accepted.")
         if action == "state":
             if not self.connected:
                 raise RuntimeError("Echo Dot is offline. Check its power and Wi-Fi.")
@@ -303,10 +253,9 @@ class RingService:
             if action == "color":
                 rgb = args.get("rgb")
                 if not isinstance(rgb, list) or len(rgb) != 3 or any(isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 255 for channel in rgb):
-                    raise ValueError("Choose a supported color or RGB channels from 0 through 255.")
+                    raise ValueError("The selected RGB channels must be integers from 0 through 255.")
                 state = await asyncio.to_thread(self._send_and_confirm, {"state": True, "rgb": _rgb_float(rgb), "effect": "None"}, "color")
-                color_name = next((name for name, value in COLOR_NAMES.items() if list(value) == rgb), "custom RGB")
-                return self._result(action, f"The Echo Dot confirmed {color_name} ({rgb[0]}, {rgb[1]}, {rgb[2]}).", state=state, color_name=color_name, rgb=rgb)
+                return self._result(action, f"The Dot reports RGB ({rgb[0]}, {rgb[1]}, {rgb[2]}) with effect {state['effect']}.", state=state, rgb=rgb)
             if action == "brightness":
                 level = _clamp_brightness(args.get("brightness"))
                 state = await asyncio.to_thread(self._send_and_confirm, {"state": True, "brightness": level}, "brightness")
@@ -318,33 +267,44 @@ class RingService:
                 state = await asyncio.to_thread(self._send_and_confirm, {"state": True, "effect": effect}, "effect")
                 message = "The Echo Dot confirmed the animation is stopped." if effect == "None" else f"The Echo Dot confirmed the {effect} animation is running."
                 return self._result(action, message, state=state, effect=effect)
-            if action == "palette":
-                name = args.get("palette")
-                mode = args.get("mode", "paint")
-                if name not in PALETTES or mode not in {"paint", "animate"}:
-                    raise ValueError("Choose one of the available palettes in paint or animate mode.")
-                if mode == "animate":
-                    animate_effect = {"rainbow": "Rainbow", "aurora": "Aurora", "fire": "Fireplace", "ocean": "Ocean Ripple", "ice": "Ice Comet", "sunset": "Sunset Drift", "forest": "Forest Twinkle", "crimson": "Crimson Heartbeat", "alarm": "Alert", "duo": "DNA", "pacman": "Pac-Man"}.get(name)
-                    if not animate_effect or animate_effect not in self.effects:
-                        raise ValueError("The Dot does not advertise an animation for that palette.")
-                    state = await asyncio.to_thread(self._send_and_confirm, {"state": True, "effect": animate_effect}, "palette")
-                    return self._result(action, f"The Echo Dot confirmed its {name} palette animation ({animate_effect}).", state=state, palette=name, mode=mode, effect=animate_effect)
-                # Paint the 12 channel values into the device's native segment lights.
-                if len(self.segment_keys) < 12:
-                    raise RuntimeError("The Dot does not expose all 12 segment entities required to paint a palette.")
-                if self.state.get("effect") not in {None, "", "None"}:
-                    raise RuntimeError("A running effect owns the ring. Stop the effect before painting a palette.")
-                await asyncio.to_thread(self._send_and_confirm, {"state": True, "effect": "None"}, "effect")
-                frame = _interpolate(PALETTES[name])
-                for number, rgb in enumerate(frame, 1):
-                    if number not in self.segment_keys:
-                        raise RuntimeError(f"The Dot has no LED ring segment {number}.")
-                    with self._condition:
-                        before = self._revision
-                    self.client.light_command(self.segment_keys[number], state=True, rgb=_rgb_float(rgb), brightness=1.0)
-                    await asyncio.to_thread(self._wait_for_state, before, lambda _state: True)
-                return self._result(action, f"The Echo Dot reported all 12 segment commands for the {name} palette.", palette=name, mode=mode)
         raise ValueError("Unsupported Ring Light action.")
+
+    @staticmethod
+    def _validate_tool_arguments(arguments: Any) -> dict[str, Any]:
+        """Enforce each action's exact parameter format at the skill boundary."""
+        if not isinstance(arguments, dict) or not isinstance(arguments.get("action"), str):
+            raise ValueError("control_ring arguments must be an object with a string action")
+        action = arguments["action"]
+        allowed = {
+            "catalog": {"action"},
+            "color_catalog": {"action"},
+            "state": {"action"},
+            "on": {"action"},
+            "off": {"action"},
+            "color": {"action", "rgb"},
+            "brightness": {"action", "brightness"},
+            "effect": {"action", "effect"},
+        }
+        if action not in allowed:
+            raise ValueError("Unsupported Ring Light action")
+        extra = set(arguments) - allowed[action]
+        if extra:
+            raise ValueError(f"Unsupported {action} arguments: {', '.join(sorted(extra))}")
+        checked = dict(arguments)
+        if action == "color":
+            rgb = checked.get("rgb")
+            if not isinstance(rgb, list) or len(rgb) != 3 or any(
+                isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 255
+                for channel in rgb
+            ):
+                raise ValueError("rgb must contain exactly three integer channels from 0 through 255")
+        elif action == "brightness":
+            _clamp_brightness(checked.get("brightness"))
+        elif action == "effect":
+            effect = checked.get("effect")
+            if not isinstance(effect, str) or not 1 <= len(effect) <= 64:
+                raise ValueError("effect must be a non-empty name of at most 64 characters")
+        return checked
 
     async def handle(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         if operation == "match":
@@ -352,7 +312,8 @@ class RingService:
         if operation == "execute":
             if payload.get("tool") != "control_ring" or not isinstance(payload.get("arguments"), dict):
                 raise ValueError("Only the declared control_ring tool is available.")
-            return {"result": await self._execute(payload["arguments"])}
+            arguments = self._validate_tool_arguments(payload["arguments"])
+            return {"result": await self._execute(arguments)}
         raise ValueError("Unsupported operation.")
 
     async def close(self) -> None:

@@ -3,8 +3,9 @@
   "kind": "nix-skill",
   "id": "ring-light",
   "name": "Ring Light",
-  "version": "1.0.0",
-  "description": "Control an Echo Dot 2 LED ring with solid RGB colors, built-in animations, named palettes, and brightness.",
+  "version": "1.1.1",
+  "description": "Control an Echo Dot 2 LED ring using model-selected RGB values and effects advertised by the connected firmware.",
+  "assistant_summary": "Controls the configured Echo Dot LED ring. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Use action catalog to read the live firmware catalog, effect with an exact advertised name, color with three RGB channels, state to read current state, or on/off/brightness as requested. Never claim success unless the device-reported state confirms it.",
   "category": "Smart Home",
   "publisher": "NIX Community Skills",
   "license": "MIT",
@@ -37,20 +38,45 @@
     "requirements": "requirements.txt",
     "autostart": false
   },
+  "device_ui": {
+    "status_tool": "control_ring",
+    "status_arguments": {"action": "state"},
+    "visualization": {
+      "type": "ring",
+      "color_path": "state.rgb",
+      "active_path": "state.on",
+      "label_path": "device_name"
+    },
+    "fields": [
+      {"label": "Power", "path": "state.on", "format": "boolean"},
+      {"label": "Brightness", "path": "state.brightness", "format": "percent"},
+      {"label": "Color", "path": "state.rgb", "format": "color"},
+      {"label": "Effect", "path": "state.effect", "format": "text"}
+    ],
+    "controls": [
+      {"label": "Turn on", "tool": "control_ring", "arguments": {"action": "on"}, "fields": []},
+      {"label": "Turn off", "tool": "control_ring", "arguments": {"action": "off"}, "fields": []},
+      {"label": "Set color", "tool": "control_ring", "arguments": {"action": "color"}, "fields": [{"name": "rgb", "label": "Color", "widget": "color"}]},
+      {"label": "Set brightness", "tool": "control_ring", "arguments": {"action": "brightness"}, "fields": [{"name": "brightness", "label": "Brightness", "widget": "number"}]}
+    ]
+  },
   "tools": [
     {
       "name": "control_ring",
-      "description": "Read the ring state or perform one requested action: turn on/off, set a solid RGB color, set brightness, run a prebuilt effect or stop it, or paint/animate a named palette.",
+      "description": "Read live ring state/effect catalog or perform one requested action: turn on/off, choose RGB channels for a described color, set brightness, or run one exact effect name advertised by the connected Dot's firmware.",
       "input_schema": {
         "type": "object",
+        "oneOf": [
+          {"type": "object", "properties": {"action": {"type": "string", "enum": ["catalog", "color_catalog", "state", "on", "off"]}}, "required": ["action"]},
+          {"type": "object", "properties": {"action": {"type": "string", "enum": ["color"]}, "rgb": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "integer", "minimum": 0, "maximum": 255}}}, "required": ["action", "rgb"]},
+          {"type": "object", "properties": {"action": {"type": "string", "enum": ["brightness"]}, "brightness": {"type": "number", "minimum": 0.05, "maximum": 1.0}}, "required": ["action", "brightness"]},
+          {"type": "object", "properties": {"action": {"type": "string", "enum": ["effect"]}, "effect": {"type": "string", "minLength": 1, "maxLength": 64}}, "required": ["action", "effect"]}
+        ],
         "properties": {
-          "action": {"type": "string", "enum": ["catalog", "state", "on", "off", "color", "brightness", "effect", "palette"]},
-          "color": {"type": "string", "maxLength": 32},
+          "action": {"type": "string", "enum": ["catalog", "color_catalog", "state", "on", "off", "color", "brightness", "effect"]},
           "rgb": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "integer", "minimum": 0, "maximum": 255}},
           "brightness": {"type": "number", "minimum": 0.05, "maximum": 1.0},
-          "effect": {"type": "string", "maxLength": 64},
-          "palette": {"type": "string", "maxLength": 32},
-          "mode": {"type": "string", "enum": ["paint", "animate"]}
+          "effect": {"type": "string", "maxLength": 64}
         },
         "required": ["action"],
         "additionalProperties": false
@@ -71,17 +97,14 @@
             "additionalProperties": false
           },
           "device_connected": {"type": "boolean"},
+          "device_name": {"type": "string", "maxLength": 80},
           "available_effects": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 64}},
-          "available_palettes": {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 32}},
-          "color_name": {"type": "string", "maxLength": 32},
           "rgb": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "integer", "minimum": 0, "maximum": 255}},
           "brightness": {"type": "number", "minimum": 0.0, "maximum": 1.0},
           "effect": {"type": "string", "maxLength": 64},
-          "palette": {"type": "string", "maxLength": 32},
-          "mode": {"type": "string", "maxLength": 16},
           "message": {"type": "string", "maxLength": 240}
         },
-        "required": ["ok", "action", "device_connected", "available_effects", "available_palettes", "message"],
+        "required": ["ok", "action", "device_connected", "device_name", "available_effects", "message"],
         "additionalProperties": false
       }
     }
