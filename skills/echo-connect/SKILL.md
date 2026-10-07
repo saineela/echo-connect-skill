@@ -1,6 +1,6 @@
 <p align="center"><a href="https://github.com/saineela/puca"><img src="https://res.cloudinary.com/dh5uxc6ql/image/upload/v1790917615/93d18a47-5f3a-46e1-ad71-705b2680442f_anp8f1.png" alt="NIX PUCA" width="320"></a></p>
 
-# Ring Light skill for NIX PUCA
+# Echo Connect skill for NIX PUCA
 
 [☆ Star NIX PUCA on GitHub](https://github.com/saineela/puca/stargazers)
 
@@ -38,7 +38,7 @@ The worker connects directly from the NIX host to the Dot's ESPHome API on port 
 ## Setup and testing
 
 - Install the skill package from a public NIX skills repository (or the local GitHub-compatible test repository used during development). Installation only downloads declared files.
-- Set the Dot's IP and rotated 32-byte base64 ESPHome API key under Skills → Ring Light setup.
+- Set the Dot's IP and rotated 32-byte base64 ESPHome API key under Skills → Echo Connect setup.
 - Review and explicitly trust that package; NIX starts the local worker and verifies it can authenticate, find the LED ring entity and receive state.
 - Declared Python dependencies are provisioned during installation into this skill's private `.venv`; install does not launch the entrypoint or connect to a Dot.
 - Unit/integration tests use simulated ESPHome clients. Live hardware commands are not sent during package tests.

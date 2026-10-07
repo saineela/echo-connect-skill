@@ -1,0 +1,514 @@
+{
+  "schema_version": 1,
+  "kind": "nix-skill",
+  "id": "echo-connect",
+  "name": "Echo Connect",
+  "version": "1.2.0",
+  "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB) via its native ESPHome API.",
+  "assistant_summary": "You are Echo Connect, controlling the configured Echo Dot LED ring and speaker. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Ring actions: catalog, color_catalog, state, on/off, color (rgb), brightness, effect. Speaker actions: volume (0.0-1.0), mute, unmute, say (text), stop_speaking. Use volume 0.1 steps on first adjustment and only announce what the device-reported state confirms.",
+  "category": "Smart Home",
+  "publisher": "NIX Community Skills",
+  "license": "MIT",
+  "icon": "◉",
+  "tags": [
+    "echo-dot",
+    "led",
+    "rgb",
+    "animations",
+    "hardware",
+    "echo-connect"
+  ],
+  "permissions": [
+    "Connect to the configured Echo Dot ESPHome API over the local network.",
+    "Control the Dot LED ring, speaker volume/mute, and 12 segments when explicitly requested.",
+    "Announce speech on the Dot when the user asks for it.",
+    "Run the installed worker subprocess with the NIX user's OS permissions; this is not sandboxed."
+  ],
+  "setup_fields": [
+    {
+      "id": "device_ip",
+      "label": "Echo Dot IP address",
+      "type": "ipv4",
+      "required": true,
+      "help": "Private LAN IPv4 address of the Dot. Reserve this address in DHCP for stability."
+    },
+    {
+      "id": "api_key",
+      "label": "ESPHome API encryption key (PSK)",
+      "type": "secret",
+      "required": true,
+      "help": "Base64-encoded 32-byte Noise key from the Dot's ESPHome configuration. Use a rotated key; do not reuse one posted publicly."
+    }
+  ],
+  "runtime": {
+    "protocol": "nix-skill-jsonl-v1",
+    "entrypoint": "ring_light_worker.py",
+    "requirements": "requirements.txt",
+    "autostart": false
+  },
+  "device_ui": {
+    "status_tool": "control_ring",
+    "status_arguments": {
+      "action": "state"
+    },
+    "visualization": {
+      "type": "ring",
+      "color_path": "state.rgb",
+      "active_path": "state.on",
+      "label_path": "device_name"
+    },
+    "fields": [
+      {
+        "label": "Power",
+        "path": "state.on",
+        "format": "boolean"
+      },
+      {
+        "label": "Brightness",
+        "path": "state.brightness",
+        "format": "percent"
+      },
+      {
+        "label": "Color",
+        "path": "state.rgb",
+        "format": "color"
+      },
+      {
+        "label": "Effect",
+        "path": "state.effect",
+        "format": "text"
+      },
+      {
+        "label": "Volume",
+        "path": "speaker.volume",
+        "format": "number"
+      }
+    ],
+    "controls": [
+      {
+        "label": "Turn on",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "on"
+        },
+        "fields": []
+      },
+      {
+        "label": "Turn off",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "off"
+        },
+        "fields": []
+      },
+      {
+        "label": "Set color",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "color"
+        },
+        "fields": [
+          {
+            "name": "rgb",
+            "label": "Color",
+            "widget": "color"
+          }
+        ]
+      },
+      {
+        "label": "Set brightness",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "brightness"
+        },
+        "fields": [
+          {
+            "name": "brightness",
+            "label": "Brightness",
+            "widget": "number"
+          }
+        ]
+      },
+      {
+        "label": "Set volume",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "volume"
+        },
+        "fields": [
+          {
+            "name": "volume",
+            "label": "Volume",
+            "widget": "number"
+          }
+        ]
+      },
+      {
+        "label": "Mute",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "mute"
+        },
+        "fields": []
+      },
+      {
+        "label": "Unmute",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "unmute"
+        },
+        "fields": []
+      },
+      {
+        "label": "Say text",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "say"
+        },
+        "fields": [
+          {
+            "name": "text",
+            "label": "Text to speak",
+            "widget": "text"
+          }
+        ]
+      },
+      {
+        "label": "Stop speaking",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "stop_speaking"
+        },
+        "fields": []
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "control_ring",
+      "description": "Read live ring state/effect catalog or perform one requested action: turn on/off, choose RGB channels for a described color, set brightness, or run one exact effect name advertised by the connected Dot's firmware.",
+      "input_schema": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "catalog",
+                  "color_catalog",
+                  "state",
+                  "on",
+                  "off",
+                  "mute",
+                  "unmute",
+                  "stop_speaking"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "color"
+                ]
+              },
+              "rgb": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              }
+            },
+            "required": [
+              "action",
+              "rgb"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "brightness"
+                ]
+              },
+              "brightness": {
+                "type": "number",
+                "minimum": 0.05,
+                "maximum": 1.0
+              }
+            },
+            "required": [
+              "action",
+              "brightness"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "effect"
+                ]
+              },
+              "effect": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "action",
+              "effect"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "volume"
+                ]
+              },
+              "volume": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
+              }
+            },
+            "required": [
+              "action",
+              "volume"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "say"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "action",
+              "text"
+            ]
+          }
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "catalog",
+              "color_catalog",
+              "state",
+              "on",
+              "off",
+              "mute",
+              "unmute",
+              "stop_speaking",
+              "color",
+              "brightness",
+              "effect",
+              "volume",
+              "say"
+            ]
+          },
+          "rgb": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "brightness": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 1.0
+          },
+          "effect": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "action": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "state": {
+            "type": "object",
+            "properties": {
+              "on": {
+                "type": "boolean"
+              },
+              "brightness": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "rgb": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              },
+              "effect": {
+                "type": "string",
+                "maxLength": 64
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "on",
+              "brightness",
+              "rgb",
+              "effect"
+            ]
+          },
+          "device_connected": {
+            "type": "boolean"
+          },
+          "device_name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "available_effects": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "rgb": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "brightness": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "effect": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "speaker": {
+            "type": "object",
+            "properties": {
+              "volume": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "muted": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string",
+                "maxLength": 30
+              }
+            },
+            "required": [
+              "volume",
+              "muted",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          }
+        },
+        "required": [
+          "ok",
+          "action",
+          "state",
+          "speaker",
+          "device_connected",
+          "device_name",
+          "available_effects",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "triggers": [
+    "echo connect",
+    "echo connect ring",
+    "ring",
+    "led ring",
+    "ring light",
+    "echo dot ring"
+  ],
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "ring_light_worker.py",
+    "requirements.txt"
+  ]
+}

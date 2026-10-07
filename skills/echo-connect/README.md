@@ -2,7 +2,7 @@
 
 [☆ Star NIX PUCA on GitHub](https://github.com/saineela/puca/stargazers)
 
-# NIX Ring Light skill
+# NIX Echo Connect skill
 
 This is a separately publishable NIX skill package for controlling an Echo Dot 2 LED ring. Its NIX worker uses ESPHome's documented `aioesphomeapi` native API client; it is a fresh implementation and does not redistribute the upstream Ring Light repository's unlicensed bridge/client code.
 
@@ -10,7 +10,7 @@ This is a separately publishable NIX skill package for controlling an Echo Dot 2
 
 The repository root `nix-skills.json` and `skills/ring-light/skill.json` follow NIX marketplace schema v1. The marketplace downloads only the paths in `files`. `entrypoint` and `runtime.protocol` opt the package into NIX's general worker contract (`nix-skill-jsonl-v1`); an install remains static and non-executable.
 
-To try the local repo through the same flow as GitHub, serve it as a local GitHub-compatible HTTP fixture in tests; `/api/skills`' public GitHub importer remains unmodified and accepts only public GitHub repositories. After publishing, enter the canonical public GitHub repository URL, install Ring Light, configure its inputs, inspect the selected package version, then explicitly trust it.
+To try the local repo through the same flow as GitHub, serve it as a local GitHub-compatible HTTP fixture in tests; `/api/skills`' public GitHub importer remains unmodified and accepts only public GitHub repositories. After publishing, enter the canonical public GitHub repository URL, install Echo Connect, configure its inputs, inspect the selected package version, then explicitly trust it.
 
 ## Device requirements and configuration
 

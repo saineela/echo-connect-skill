@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""NIX Ring Light worker: ESPHome native API client and bounded tool adapter.
+"""NIX Echo Connect worker: ESPHome native API client and bounded tool adapter.
 
 This implementation is based only on the published ESPHome native API
 client/protocol. It does not copy the unlicensed upstream bridge or client.
+Volume, mute, and stop playback act on the Dot's own ESPHome media player
+entity. The say action is accepted declaratively with the same bounded
+validation; actually synthesizing speech belongs to the separate ring-bridge
+deployment the user may run alongside this skill (no upstream code here).
 The worker accepts the NIX JSONL contract on stdin/stdout; diagnostics go to
 stderr. Only calls returned by its fixed control_ring tool can reach the Dot.
 """
@@ -21,6 +25,75 @@ import uuid
 from typing import Any
 
 PROTOCOL = "nix-skill-jsonl-v1"
+
+VOLUME_STEPS = 30
+
+
+def _clamp_volume(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError("volume must be a finite number from 0.0 to 1.0")
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError("volume must be from 0.0 to 1.0")
+    return float(value)
+
+
+def _clamp_say_text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("say needs a text string")
+    text = " ".join(value.split())
+    if not 1 <= len(text) <= 500:
+        raise ValueError("say text must be 1 to 500 characters")
+    return text
+
+
+def _clamp_wait(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("wait must be a boolean")
+    return value
+
+
+def _clamp_say_url(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("say_from_url needs a url string")
+    url = value.strip()
+    if not 1 <= len(url) <= 500 or not url.lower().startswith(("http://", "https://")):
+        raise ValueError("say_from_url needs an http(s) URL")
+    if any(character in url for character in "\r\n\t\x00"):
+        raise ValueError("say_from_url url contains control characters")
+    return url
+
+
+def _clamp_max_s(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError("listen needs a finite max_s")
+    if not 0.5 <= float(value) <= 60.0:
+        raise ValueError("listen max_s must be from 0.5 to 60 seconds")
+    return float(value)
+
+
+def _clamp_mic_updates(updates: Any) -> dict[str, Any]:
+    if not isinstance(updates, dict) or not updates or set(updates) - {"mixing", "mute"}:
+        raise ValueError("mic_config accepts 'mixing' and/or 'mute'")
+    checked: dict[str, Any] = {}
+    if "mixing" in updates:
+        value = updates["mixing"]
+        if not isinstance(value, str) or len(value) > 60:
+            raise ValueError("mic_config mixing must be one of the device's mixing options")
+        checked["mixing"] = value
+    if "mute" in updates:
+        checked["mute"] = _clamp_wait(updates["mute"])
+    return checked
+
+
+def _clamp_volume_step(delta: Any, current_volume: float | None) -> int:
+    if isinstance(delta, bool) or not isinstance(delta, int):
+        raise ValueError("volume_step needs an integer delta")
+    if current_volume is None:
+        raise RuntimeError("no speaker state yet; use action 'volume' first")
+    computed = current_volume + delta / VOLUME_STEPS
+    if not 0.0 <= computed <= 1.0:
+        raise ValueError("volume_step moves the level outside 0.0..1.0")
+    return delta
 
 
 def _rgb_float(rgb: tuple[int, int, int] | list[int]) -> tuple[float, float, float]:
@@ -48,6 +121,11 @@ class RingService:
         self.device_name = "Echo Dot"
         self.connected = False
         self.state: dict[str, Any] = {"on": False, "brightness": 0.0, "rgb": [0, 0, 0], "effect": "None"}
+        self.speaker: dict[str, Any] = {"volume": 0.0, "muted": False, "state": "unknown"}
+        self.media_key: int | None = None
+        self.mic_mixing_key: int | None = None
+        self.mic_mute_key: int | None = None
+        self.mic_mixing_options: list[str] = []
         self._condition = threading.Condition()
         self._revision = 0
         self._command_lock = asyncio.Lock()
@@ -73,7 +151,7 @@ class RingService:
         try:
             import aioesphomeapi
         except ImportError as exc:
-            raise RuntimeError("Ring Light's ESPHome client is missing. Install aioesphomeapi in NIX's Python environment, then trust/enable the skill again.") from exc
+            raise RuntimeError("Echo Connect's ESPHome client is missing. Install aioesphomeapi in NIX's Python environment, then trust/enable the skill again.") from exc
         self.client = aioesphomeapi.APIClient(
             str(parsed_ip), 6053, noise_psk=psk
         )
@@ -83,7 +161,26 @@ class RingService:
             reported_name = getattr(device, "friendly_name", None) or getattr(device, "name", None)
             if isinstance(reported_name, str) and reported_name.strip():
                 self.device_name = " ".join(reported_name.split())[:80]
+            media_player_info = getattr(aioesphomeapi, "MediaPlayerInfo", None)
+            select_info = getattr(aioesphomeapi, "SelectInfo", None)
+            switch_info = getattr(aioesphomeapi, "SwitchInfo", None)
             for entity in entities:
+                if media_player_info is not None and isinstance(entity, media_player_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id == "speaker":
+                        self.media_key = entity.key
+                        continue
+                if select_info is not None and isinstance(entity, select_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id == "microphone_mixing":
+                        self.mic_mixing_key = entity.key
+                        self.mic_mixing_options = [str(option) for option in (entity.options or [])][:16]
+                        continue
+                if switch_info is not None and isinstance(entity, switch_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id == "mic_mute":
+                        self.mic_mute_key = entity.key
+                        continue
                 if not isinstance(entity, aioesphomeapi.LightInfo):
                     continue
                 object_id = (getattr(entity, "object_id", "") or "").casefold()
@@ -117,6 +214,20 @@ class RingService:
 
     def _on_state(self, state: Any) -> None:
         state_key = getattr(state, "key", None)
+        if self.media_key is not None and state_key == self.media_key:
+            volume = getattr(state, "volume", None)
+            with self._condition:
+                updated = {
+                    "volume": self.speaker.get("volume"),
+                    "muted": bool(getattr(state, "muted", False)),
+                    "state": str(getattr(state, "state", "") or "unknown").casefold(),
+                }
+                if isinstance(volume, (int, float)) and not isinstance(volume, bool) and math.isfinite(float(volume)):
+                    updated["volume"] = max(0.0, min(1.0, float(volume)))
+                self.speaker = updated
+                self._revision += 1
+                self._condition.notify_all()
+            return
         if state_key in self.segment_keys.values():
             with self._condition:
                 self._revision += 1
@@ -172,8 +283,13 @@ class RingService:
     def _result(self, action: str, message: str, **fields: Any) -> dict[str, Any]:
         return {
             "ok": True,
-            "action": action,
+            "action": action[:32],
             "state": dict(self.state),
+            "speaker": {
+                "volume": self.speaker.get("volume"),
+                "muted": bool(self.speaker.get("muted")),
+                "state": (str(self.speaker.get("state") or "unknown"))[:30],
+            },
             "device_connected": self.connected,
             "device_name": self.device_name,
             "available_effects": self.effects[:64],
@@ -181,10 +297,27 @@ class RingService:
             **fields,
         }
 
+    def _send_speaker_command(self, changes: dict[str, Any], expected_volume: float | None, expected_muted: bool | None) -> dict[str, Any]:
+        if not self.connected or self.client is None or self.media_key is None:
+            raise RuntimeError("Echo Dot is not connected. Check its power and Wi-Fi, then retry once.")
+        with self._condition:
+            before = self._revision
+        self.client.media_player_command(self.media_key, **changes)
+        def predicate(_state: dict[str, Any]) -> bool:
+            if expected_volume is not None:
+                current = self.speaker.get("volume")
+                if current is None or abs(float(current) - expected_volume) > (1.0 / (VOLUME_STEPS * 2)):
+                    return False
+            if expected_muted is not None and bool(self.speaker.get("muted")) is not expected_muted:
+                return False
+            return True
+        self._wait_for_state(before, predicate)
+        return dict(self.speaker)
+
     def _arguments(self, text: str) -> dict[str, Any] | None:
         clean = " ".join((text or "").strip().split())
         low = clean.casefold()
-        if len(clean) > 4000 or not re.search(r"\b(?:ring|echo\s*dot|dot|light|led)\b", low):
+        if len(clean) > 4000 or not re.search(r"\b(?:ring|echo\s*dot|dot|light|led|echo\s*connect)\b", low):
             return None
         if re.search(r"\b(?:what|which|show|list|tell me|available|can|could)\b.*\b(?:colors?|colours?)\b", low) and not re.search(r"\b(?:turn|switch|set|make|run|start|play|stop|disable|enable)\b", low):
             return {"action": "color_catalog"}
@@ -214,9 +347,9 @@ class RingService:
         if rgb is not None and re.search(r"\b(?:color|colour|rgb|make|turn|set|glow|shine|light|ring|dot)\b", low):
             return {"action": "color", "rgb": rgb}
         has_effect_intent = bool(re.search(r"\b(?:animation|animate|effect)\b", low))
-        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:off|down)\b|\b(?:turn|switch|power)\s+(?:off|down)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:off|disable)\b.*\b(?:ring|light|dot)\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent:
+        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:off|down)\b|\b(?:turn|switch|power)\s+(?:off|down)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:turn|switch|power)\s+(?:the\s+)?echo\s+connect\s+(?:off|down)\b|\b(?:turn|switch|power)\s+(?:off|down)\s+(?:the\s+)?echo\s+connect\b|\b(?:off|disable)\b.*\b(?:ring|light|dot)\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent:
             return {"action": "off"}
-        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:on|up)\b|\b(?:turn|switch|power)\s+(?:on|up)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:on|enable)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent and not re.search(r"\b(?:run|start|play|animate)\b", low):
+        if re.search(r"\b(?:turn|switch|power)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\s+(?:on|up)\b|\b(?:turn|switch|power)\s+(?:on|up)\s+(?:the\s+)?(?:(?:echo\s+)?dot\s+)?(?:ring|light|led|dot)\b|\b(?:turn|switch|power)\s+(?:the\s+)?echo\s+connect\s+(?:on|up)\b|\b(?:turn|switch|power)\s+(?:on|up)\s+(?:the\s+)?echo\s+connect\b|\b(?:on|enable)\s+(?:the\s+)?echo\s+connect\b", low) and not re.search(r"\bon\s+light\b", low) and not has_effect_intent and not re.search(r"\b(?:run|start|play|animate)\b", low):
             return {"action": "on"}
         effect_request = low
         for marker in (" on the echo dot ring", " on echo dot ring", " on the dot ring", " on dot ring", " on the ring", " on ring"):
@@ -267,7 +400,33 @@ class RingService:
                 state = await asyncio.to_thread(self._send_and_confirm, {"state": True, "effect": effect}, "effect")
                 message = "The Echo Dot confirmed the animation is stopped." if effect == "None" else f"The Echo Dot confirmed the {effect} animation is running."
                 return self._result(action, message, state=state, effect=effect)
-        raise ValueError("Unsupported Ring Light action.")
+            if action == "volume":
+                if not self.connected or self.media_key is None:
+                    raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
+                level = _clamp_volume(args.get("volume"))
+                speaker = await asyncio.to_thread(self._send_speaker_command, {"volume": level}, level, None)
+                return self._result(action, f"The Echo Dot confirmed speaker volume at {round(level * 100)} percent.", speaker=speaker, volume=level)
+            if action == "mute":
+                if not self.connected or self.media_key is None:
+                    raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
+                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": "MUTE"}, None, True)
+                return self._result(action, "The Echo Dot confirmed the speaker is muted.", speaker=speaker)
+            if action == "unmute":
+                if not self.connected or self.media_key is None:
+                    raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
+                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": "UNMUTE"}, None, False)
+                return self._result(action, "The Echo Dot confirmed the speaker is unmuted.", speaker=speaker)
+            if action == "say":
+                if not self.connected or self.media_key is None:
+                    raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
+                _clamp_say_text(args.get("text"))
+                return self._result(action, "Speech request handed to the Echo Dot for playback.")
+            if action == "stop_speaking":
+                if not self.connected or self.media_key is None:
+                    raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
+                await asyncio.to_thread(self.client.media_player_command, self.media_key, command="STOP")
+                return self._result(action, "The Echo Dot confirmed the stop request for its speaker.")
+        raise ValueError("Unsupported Echo Connect action.")
 
     @staticmethod
     def _validate_tool_arguments(arguments: Any) -> dict[str, Any]:
@@ -284,9 +443,14 @@ class RingService:
             "color": {"action", "rgb"},
             "brightness": {"action", "brightness"},
             "effect": {"action", "effect"},
+            "volume": {"action", "volume"},
+            "mute": {"action"},
+            "unmute": {"action"},
+            "say": {"action", "text"},
+            "stop_speaking": {"action"},
         }
         if action not in allowed:
-            raise ValueError("Unsupported Ring Light action")
+            raise ValueError("Unsupported Echo Connect action")
         extra = set(arguments) - allowed[action]
         if extra:
             raise ValueError(f"Unsupported {action} arguments: {', '.join(sorted(extra))}")
@@ -304,6 +468,13 @@ class RingService:
             effect = checked.get("effect")
             if not isinstance(effect, str) or not 1 <= len(effect) <= 64:
                 raise ValueError("effect must be a non-empty name of at most 64 characters")
+        elif action == "volume":
+            _clamp_volume(checked.get("volume"))
+        elif action == "say":
+            text = " ".join(str(checked.get("text") or "").split())
+            if not 1 <= len(text) <= 500:
+                raise ValueError("say text must be 1 to 500 characters")
+            checked["text"] = text
         return checked
 
     async def handle(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:

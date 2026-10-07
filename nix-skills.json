@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "kind": "nix-skills-repository",
-  "name": "NIX Ring Light Skill",
-  "description": "A NIX-managed Echo Dot LED ring skill using firmware-reported effects and model-selected RGB colors.",
+  "name": "NIX Echo Connect Skill",
+  "description": "A NIX-managed Echo Dot skill (Echo Connect) for the LED ring and speaker: firmware-reported effects, model-selected RGB colors, volume, mute, and speech.",
   "publisher": "NIX Community Skills",
   "skills": [
     {
-      "manifest": "skills/ring-light/skill.json"
+      "manifest": "skills/echo-connect/skill.json"
     }
   ]
 }
