@@ -68,6 +68,23 @@ def _clamp_max_s(value: Any) -> float:
         raise ValueError("listen needs a finite max_s")
     if not 0.5 <= float(value) <= 60.0:
         raise ValueError("listen max_s must be from 0.5 to 60 seconds")
+
+
+def _media_command(name: str) -> Any:
+    """Send ESPHome media-player commands as their proper enum when available.
+
+    The production aioesphomeapi expects MediaPlayerCommand members; test
+    stubs (and very old installs) may not provide the enum, so fall back to
+    the plain command-name string.
+    """
+    try:
+        import aioesphomeapi  # resolved at call time; lazy like initialize
+    except Exception:
+        return name
+    commands = getattr(aioesphomeapi, "MediaPlayerCommand", None)
+    if commands is None:
+        return name
+    return getattr(commands, name, name)
     return float(value)
 
 
@@ -409,12 +426,12 @@ class RingService:
             if action == "mute":
                 if not self.connected or self.media_key is None:
                     raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
-                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": "MUTE"}, None, True)
+                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": _media_command("MUTE")}, None, True)
                 return self._result(action, "The Echo Dot confirmed the speaker is muted.", speaker=speaker)
             if action == "unmute":
                 if not self.connected or self.media_key is None:
                     raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
-                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": "UNMUTE"}, None, False)
+                speaker = await asyncio.to_thread(self._send_speaker_command, {"command": _media_command("UNMUTE")}, None, False)
                 return self._result(action, "The Echo Dot confirmed the speaker is unmuted.", speaker=speaker)
             if action == "say":
                 if not self.connected or self.media_key is None:
@@ -424,7 +441,7 @@ class RingService:
             if action == "stop_speaking":
                 if not self.connected or self.media_key is None:
                     raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
-                await asyncio.to_thread(self.client.media_player_command, self.media_key, command="STOP")
+                await asyncio.to_thread(self.client.media_player_command, self.media_key, command=_media_command("STOP"))
                 return self._result(action, "The Echo Dot confirmed the stop request for its speaker.")
         raise ValueError("Unsupported Echo Connect action.")
 
