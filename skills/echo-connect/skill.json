@@ -3,7 +3,11 @@
   "kind": "nix-skill",
   "id": "echo-connect",
   "name": "Echo Connect",
+<<<<<<< HEAD
   "version": "1.3.0",
+=======
+  "version": "1.2.0",
+>>>>>>> 87f7d84d39f43ff0b097ac1981d970a7ce226942
   "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB) via its native ESPHome API.",
   "assistant_summary": "You are Echo Connect, controlling the configured Echo Dot LED ring and speaker. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Ring actions: catalog, color_catalog, state, on/off, color (rgb), brightness, effect. Speaker actions: volume (0.0-1.0), mute, unmute, say (text), stop_speaking. Use volume 0.1 steps on first adjustment and only announce what the device-reported state confirms.",
   "category": "Smart Home",
@@ -130,6 +134,7 @@
         ]
       },
       {
+<<<<<<< HEAD
         "label": "Set effect",
         "tool": "control_ring",
         "arguments": {
@@ -144,6 +149,8 @@
         ]
       },
       {
+=======
+>>>>>>> 87f7d84d39f43ff0b097ac1981d970a7ce226942
         "label": "Set volume",
         "tool": "control_ring",
         "arguments": {
