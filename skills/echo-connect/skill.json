@@ -3,9 +3,9 @@
   "kind": "nix-skill",
   "id": "echo-connect",
   "name": "Echo Connect",
-  "version": "1.3.0",
-  "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB) via its native ESPHome API.",
-  "assistant_summary": "You are Echo Connect, controlling the configured Echo Dot LED ring and speaker. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Ring actions: catalog, color_catalog, state, on/off, color (rgb), brightness, effect. Speaker actions: volume (0.0-1.0), mute, unmute, say (text), stop_speaking. Use volume 0.1 steps on first adjustment and only announce what the device-reported state confirms.",
+  "version": "1.5.2",
+  "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB) via its native ESPHome API, with optional Unreal Speech cloud voices.",
+  "assistant_summary": "You are Echo Connect, controlling the configured Echo Dot LED ring and speaker. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Ring actions: catalog, color_catalog, state, on/off, color (rgb), brightness, effect. Speaker actions: volume (0.0-1.0), mute, unmute, say (text), play_url (an http(s) audio url, optional title), pause, resume, stop_speaking. Speech uses the operator's provider: an Unreal Speech cloud voice when API keys are stored, otherwise the built-in Piper voice (amy, lessac, hfc_female, kathleen, jenny, alba) as fallback; the Voice Lab may also pass voice, speed, expressiveness, variability. The result tts object reports which engine spoke, which key was used, and each key's monthly character/audio usage; quote its fallback reason when the local voice spoke instead of the cloud. Use 0.1 volume steps on the first adjustment and only announce what the device-reported state confirms.",
   "category": "Smart Home",
   "publisher": "NIX Community Skills",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "Connect to the configured Echo Dot ESPHome API over the local network.",
     "Control the Dot LED ring, speaker volume/mute, and 12 segments when explicitly requested.",
     "Announce speech on the Dot when the user asks for it.",
+    "Send requested announcement text to the Unreal Speech API over HTTPS when an API key is configured; the built-in local voice is used otherwise.",
     "Run the installed worker subprocess with the NIX user's OS permissions; this is not sandboxed."
   ],
   "setup_fields": [
@@ -38,6 +39,55 @@
       "type": "secret",
       "required": true,
       "help": "Base64-encoded 32-byte Noise key from the Dot's ESPHome configuration. Use a rotated key; do not reuse one posted publicly."
+    },
+    {
+      "id": "tts_provider",
+      "label": "Speech provider",
+      "type": "string",
+      "required": false,
+      "help": "auto (default) uses Unreal Speech when a key is saved and the local voice otherwise; unrealspeech prefers the cloud; local always uses the built-in voice."
+    },
+    {
+      "id": "unrealspeech_api_key",
+      "label": "Unreal Speech API key 1",
+      "type": "token",
+      "required": false,
+      "help": "Optional key from unrealspeech.com. Stored masked and never shown again. Used until 90% of its monthly limit, then key 2 takes over."
+    },
+    {
+      "id": "unrealspeech_api_key_2",
+      "label": "Unreal Speech API key 2",
+      "type": "token",
+      "required": false,
+      "help": "Optional fallback key, used when key 1 is spent or fails."
+    },
+    {
+      "id": "unrealspeech_api_key_3",
+      "label": "Unreal Speech API key 3",
+      "type": "token",
+      "required": false,
+      "help": "Optional final fallback key, used when keys 1 and 2 are spent or fail."
+    },
+    {
+      "id": "unrealspeech_voice",
+      "label": "Unreal Speech voice",
+      "type": "string",
+      "required": false,
+      "help": "Cloud voice: amy (default), scarlett, dan, liv, or will. Ignored when the built-in local voice speaks."
+    },
+    {
+      "id": "unrealspeech_monthly_characters",
+      "label": "Monthly characters per key",
+      "type": "string",
+      "required": false,
+      "help": "Default 250000 (Unreal Speech free tier). A key hands over to the next key at 90% of this."
+    },
+    {
+      "id": "unrealspeech_monthly_audio_hours",
+      "label": "Monthly audio hours per key",
+      "type": "string",
+      "required": false,
+      "help": "Default 6 hours of generated audio (free tier). A key hands over to the next key at 90% of this."
     }
   ],
   "runtime": {
@@ -188,10 +238,79 @@
         ]
       },
       {
+        "label": "Speak with a tuned voice",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "say"
+        },
+        "fields": [
+          {
+            "name": "text",
+            "label": "Text to speak",
+            "widget": "text"
+          },
+          {
+            "name": "voice",
+            "label": "Voice",
+            "widget": "text"
+          },
+          {
+            "name": "speed",
+            "label": "Speed",
+            "widget": "number"
+          },
+          {
+            "name": "expressiveness",
+            "label": "Expressiveness",
+            "widget": "number"
+          },
+          {
+            "name": "variability",
+            "label": "Variability",
+            "widget": "number"
+          }
+        ]
+      },
+      {
         "label": "Stop speaking",
         "tool": "control_ring",
         "arguments": {
           "action": "stop_speaking"
+        },
+        "fields": []
+      },
+      {
+        "label": "Play URL",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "play_url"
+        },
+        "fields": [
+          {
+            "name": "url",
+            "label": "Audio URL",
+            "widget": "text"
+          },
+          {
+            "name": "title",
+            "label": "Title",
+            "widget": "text"
+          }
+        ]
+      },
+      {
+        "label": "Pause",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "pause"
+        },
+        "fields": []
+      },
+      {
+        "label": "Resume",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "resume"
         },
         "fields": []
       }
@@ -217,7 +336,9 @@
                   "off",
                   "mute",
                   "unmute",
-                  "stop_speaking"
+                  "stop_speaking",
+                  "pause",
+                  "resume"
                 ]
               }
             },
@@ -323,11 +444,55 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 500
+              },
+              "voice": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 24
+              },
+              "speed": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 1.6
+              },
+              "expressiveness": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "variability": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0
               }
             },
             "required": [
               "action",
               "text"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "play_url"
+                ]
+              },
+              "url": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 2048
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "action",
+              "url"
             ]
           }
         ],
@@ -347,7 +512,10 @@
               "brightness",
               "effect",
               "volume",
-              "say"
+              "say",
+              "play_url",
+              "pause",
+              "resume"
             ]
           },
           "rgb": {
@@ -378,6 +546,33 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "voice": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 1.6
+          },
+          "expressiveness": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "variability": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
           }
         },
         "required": [
@@ -494,6 +689,140 @@
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0
+          },
+          "voice": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "voice_speed": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 4.0
+          },
+          "tts": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "maxLength": 16
+              },
+              "engine": {
+                "type": "string",
+                "maxLength": 24
+              },
+              "voice": {
+                "type": "string",
+                "maxLength": 24
+              },
+              "key_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              },
+              "fallback": {
+                "type": "string",
+                "maxLength": 160
+              },
+              "month": {
+                "type": "string",
+                "maxLength": 7
+              },
+              "characters_limit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000000
+              },
+              "seconds_limit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000000
+              },
+              "keys": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 3
+                    },
+                    "characters": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100000000
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100000000
+                    },
+                    "characters_percent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "seconds_percent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "ready": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "characters",
+                    "seconds",
+                    "characters_percent",
+                    "seconds_percent",
+                    "ready"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "provider",
+              "engine",
+              "voice",
+              "key_index",
+              "fallback",
+              "month",
+              "characters_limit",
+              "seconds_limit",
+              "keys"
+            ],
+            "additionalProperties": false
+          },
+          "media": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "state": {
+                "type": "string",
+                "maxLength": 30
+              },
+              "state_confirmed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "url",
+              "title",
+              "state",
+              "state_confirmed"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -504,7 +833,8 @@
           "device_connected",
           "device_name",
           "available_effects",
-          "message"
+          "message",
+          "tts"
         ],
         "additionalProperties": false
       }
@@ -516,7 +846,17 @@
     "ring",
     "led ring",
     "ring light",
-    "echo dot ring"
+    "echo dot ring",
+    "volume",
+    "speaker volume",
+    "mute",
+    "unmute",
+    "brightness",
+    "ring brightness",
+    "say",
+    "speak",
+    "announce",
+    "stop speaking"
   ],
   "files": [
     "SKILL.md",
