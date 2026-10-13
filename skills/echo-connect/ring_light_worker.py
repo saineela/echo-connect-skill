@@ -255,8 +255,15 @@ class _PiperDaemon:
         """Render one WAV through the cached voices; False means "fall back"."""
         if not self.start():
             return False
-        assert self.process is not None
         with self.job_lock:
+            # `self.process` and `self.responses` are shared with stop(), which
+            # can run on another thread: a concurrent `say`, or _piper_daemon()
+            # retiring this helper when the chosen interpreter changes. Take
+            # both handles once, under the job lock this method holds for the
+            # whole job, so neither can go away between the check and its use.
+            process, responses = self.process, self.responses
+            if process is None or process.stdin is None:
+                return False
             self.counter += 1
             job_id = f"j{self.counter}"
             job = {
@@ -264,9 +271,8 @@ class _PiperDaemon:
                 "length_scale": length_scale, "noise_scale": noise_scale, "noise_w_scale": noise_w_scale,
             }
             try:
-                assert self.process.stdin is not None
-                self.process.stdin.write(json.dumps(job) + "\n")
-                self.process.stdin.flush()
+                process.stdin.write(json.dumps(job) + "\n")
+                process.stdin.flush()
             except (OSError, ValueError):
                 self.stop()
                 return False
@@ -277,7 +283,7 @@ class _PiperDaemon:
                     self.stop()
                     return False
                 try:
-                    line = self.responses.get(timeout=remaining)
+                    line = responses.get(timeout=remaining)
                 except queue.Empty:
                     self.stop()
                     return False
@@ -928,7 +934,10 @@ def _warm_speech() -> None:
             length_scale=1.0 / DEFAULT_SPEED, noise_scale=DEFAULT_EXPRESSIVENESS,
             noise_w_scale=DEFAULT_VARIABILITY, warm=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except Exception:
+        # This runs on the connect-time warm-up thread, off the critical path:
+        # any failure here just means the first `say` pays the model load, so it
+        # must never escape as an unhandled thread exception.
         return
 
 
