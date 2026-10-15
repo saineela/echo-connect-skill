@@ -15,6 +15,10 @@ Users can ask naturally, for example:
 - “Set the ring to 30 percent brightness.” (NIX safely uses a 5% minimum to avoid device-off ambiguity.)
 - “Run the Rainbow animation.” Use only exact effects from the currently connected Dot's catalog; NIX confirms the selected effect with a returned device state.
 - “What is the ring doing?” Return the last state reported by the connected device.
+- “Turn the bass up.” / “Set treble to −2.” Bass and treble are the Nix Dev speaker's own tone shelves (−6..6 dB, 1 dB steps); “turn the EQ off/on” switches the driver tuning (Speaker EQ).
+- “Where is the music playing?” The state's `audio.output_mode` is derived from the link: `local` (this device only), `external` (the connected Bluetooth speaker), or `both` (the stream cloned across the two at once).
+- “Play on both speakers.” / “Bluetooth speaker only.” Set `action: output_mode` with `mode: local|external|both`. `external` and `both` need a speaker on the Bluetooth link; without one the skill presses reconnect and reports `pending: true` rather than claiming success.
+- “Start Bluetooth pairing.” — makes the Dot discoverable so an external speaker can connect (`action: bluetooth`, `bt: pairing_on|pairing_off|reconnect|disconnect`).
 - Use the operator's NIX Devices-page device name to identify this device; that editable name is an alias, not device authorization.
 
 Solid colors are set with the RGB triplet proposed by Luna for that request; no named-color lookup table is bundled. Hex and explicit numeric RGB are passed through as supplied. Animation names must exactly match the effect list from the currently connected device firmware. The live catalog is authoritative; never invent effects or claim the device supports a guessed animation.

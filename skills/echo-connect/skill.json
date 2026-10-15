@@ -3,8 +3,8 @@
   "kind": "nix-skill",
   "id": "echo-connect",
   "name": "Echo Connect",
-  "version": "1.3.0",
-  "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB) via its native ESPHome API.",
+  "version": "1.4.1",
+  "description": "Echo Connect: control an Echo Dot 2 LED ring and speaker (volume, mute, speech, effects, RGB), its sound tuning (bass/treble/EQ), Bluetooth audio link and output routing (local / external / both) via its native ESPHome API.",
   "assistant_summary": "You are Echo Connect, controlling the configured Echo Dot LED ring and speaker. For color requests, choose one RGB triplet that fits the user's description; do not use or invent a named-color preset table. For animations/effects, use only exact names in the live_device.available_effects catalog supplied for this request. Ring actions: catalog, color_catalog, state, on/off, color (rgb), brightness, effect. Speaker actions: volume (0.0-1.0), mute, unmute, say (text), stop_speaking. Use volume 0.1 steps on first adjustment and only announce what the device-reported state confirms.",
   "category": "Smart Home",
   "publisher": "NIX Community Skills",
@@ -81,7 +81,32 @@
       {
         "label": "Volume",
         "path": "speaker.volume",
+        "format": "percent"
+      },
+      {
+        "label": "External speaker",
+        "path": "audio.bluetooth.audio",
+        "format": "text"
+      },
+      {
+        "label": "Output mode",
+        "path": "audio.output_mode",
+        "format": "text"
+      },
+      {
+        "label": "Bass",
+        "path": "audio.bass",
         "format": "number"
+      },
+      {
+        "label": "Treble",
+        "path": "audio.treble",
+        "format": "number"
+      },
+      {
+        "label": "Speaker EQ",
+        "path": "audio.eq",
+        "format": "boolean"
       }
     ],
     "controls": [
@@ -194,13 +219,119 @@
           "action": "stop_speaking"
         },
         "fields": []
+      },
+      {
+        "label": "Set bass",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "sound"
+        },
+        "fields": [
+          {
+            "name": "bass",
+            "label": "Bass (dB)",
+            "widget": "number"
+          }
+        ]
+      },
+      {
+        "label": "Set treble",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "sound"
+        },
+        "fields": [
+          {
+            "name": "treble",
+            "label": "Treble (dB)",
+            "widget": "number"
+          }
+        ]
+      },
+      {
+        "label": "Speaker EQ",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "sound"
+        },
+        "fields": [
+          {
+            "name": "eq",
+            "label": "Speaker EQ",
+            "widget": "boolean"
+          }
+        ]
+      },
+      {
+        "label": "Audio output",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "audio_output"
+        },
+        "fields": [
+          {
+            "name": "value",
+            "label": "Output",
+            "widget": "select"
+          }
+        ]
+      },
+      {
+        "label": "Output mode",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "output_mode"
+        },
+        "fields": [
+          {
+            "name": "mode",
+            "label": "Play on",
+            "widget": "select"
+          }
+        ]
+      },
+      {
+        "label": "Start Bluetooth pairing",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "bluetooth",
+          "bt": "pairing_on"
+        },
+        "fields": []
+      },
+      {
+        "label": "Stop Bluetooth pairing",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "bluetooth",
+          "bt": "pairing_off"
+        },
+        "fields": []
+      },
+      {
+        "label": "Reconnect speaker",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "bluetooth",
+          "bt": "reconnect"
+        },
+        "fields": []
+      },
+      {
+        "label": "Disconnect speaker",
+        "tool": "control_ring",
+        "arguments": {
+          "action": "bluetooth",
+          "bt": "disconnect"
+        },
+        "fields": []
       }
     ]
   },
   "tools": [
     {
       "name": "control_ring",
-      "description": "Read live ring state/effect catalog or perform one requested action: turn on/off, choose RGB channels for a described color, set brightness, or run one exact effect name advertised by the connected Dot's firmware.",
+      "description": "Read live ring state/effect catalog or perform one requested action: turn on/off, choose RGB channels for a described color, set brightness, run one exact effect name advertised by the connected Dot's firmware, adjust the speaker's sound tuning (bass/treble/EQ), choose the audio output and Bluetooth link, and set where music plays (local speaker, Bluetooth speaker, or both at once).",
       "input_schema": {
         "type": "object",
         "oneOf": [
@@ -329,6 +460,100 @@
               "action",
               "text"
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "sound"
+                ]
+              },
+              "bass": {
+                "type": "number",
+                "minimum": -6,
+                "maximum": 6
+              },
+              "treble": {
+                "type": "number",
+                "minimum": -6,
+                "maximum": 6
+              },
+              "eq": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "audio_output"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "enum": [
+                  "Automatic",
+                  "Internal speaker",
+                  "Headphones / AUX"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "bluetooth"
+                ]
+              },
+              "bt": {
+                "type": "string",
+                "enum": [
+                  "pairing_on",
+                  "pairing_off",
+                  "reconnect",
+                  "disconnect"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "output_mode"
+                ]
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "external",
+                  "both"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ]
           }
         ],
         "properties": {
@@ -347,7 +572,11 @@
               "brightness",
               "effect",
               "volume",
-              "say"
+              "say",
+              "sound",
+              "audio_output",
+              "bluetooth",
+              "output_mode"
             ]
           },
           "rgb": {
@@ -378,6 +607,44 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "bass": {
+            "type": "number",
+            "minimum": -6,
+            "maximum": 6
+          },
+          "treble": {
+            "type": "number",
+            "minimum": -6,
+            "maximum": 6
+          },
+          "eq": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": "string",
+            "enum": [
+              "Automatic",
+              "Internal speaker",
+              "Headphones / AUX"
+            ]
+          },
+          "bt": {
+            "type": "string",
+            "enum": [
+              "pairing_on",
+              "pairing_off",
+              "reconnect",
+              "disconnect"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "external",
+              "both"
+            ]
           }
         },
         "required": [
@@ -494,6 +761,61 @@
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0
+          },
+          "audio": {
+            "type": "object",
+            "properties": {
+              "bass": {
+                "type": "number"
+              },
+              "treble": {
+                "type": "number"
+              },
+              "eq": {
+                "type": "boolean"
+              },
+              "clone": {
+                "type": "boolean"
+              },
+              "audio_output": {
+                "type": "string"
+              },
+              "bluetooth": {
+                "type": "object",
+                "properties": {
+                  "pairing": {
+                    "type": "boolean"
+                  },
+                  "audio": {
+                    "type": "string"
+                  },
+                  "connected": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "connected"
+                ],
+                "additionalProperties": false
+              },
+              "output_mode": {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "external",
+                  "both"
+                ]
+              }
+            },
+            "required": [
+              "bluetooth",
+              "output_mode",
+              "clone"
+            ],
+            "additionalProperties": false
+          },
+          "pending": {
+            "type": "boolean"
           }
         },
         "required": [

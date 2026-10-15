@@ -143,6 +143,19 @@ class RingService:
         self.mic_mixing_key: int | None = None
         self.mic_mute_key: int | None = None
         self.mic_mixing_options: list[str] = []
+        # Sound tuning + Bluetooth/routing entities (TECHO5 firmware) and the
+        # latest values pushed for them; see audio_snapshot().
+        self.audio_keys: dict[str, int] = {}
+        self.audio_output_options: list[str] = []
+        self.audio: dict[str, Any] = {
+            "bass": None,
+            "treble": None,
+            "eq": None,
+            "clone": None,
+            "audio_output": None,
+            "bluetooth_pairing": None,
+            "bluetooth_audio": None,
+        }
         self._condition = threading.Condition()
         self._revision = 0
         self._command_lock = asyncio.Lock()
@@ -193,10 +206,35 @@ class RingService:
                         self.mic_mixing_key = entity.key
                         self.mic_mixing_options = [str(option) for option in (entity.options or [])][:16]
                         continue
+                    if object_id == "audio_output":
+                        self.audio_keys[object_id] = entity.key
+                        self.audio_output_options = [str(option) for option in (entity.options or [])][:8]
+                        continue
                 if switch_info is not None and isinstance(entity, switch_info):
                     object_id = (getattr(entity, "object_id", "") or "").casefold()
                     if object_id == "mic_mute":
                         self.mic_mute_key = entity.key
+                        continue
+                    if object_id in ("speaker_eq", "output_clone", "bluetooth_pairing"):
+                        self.audio_keys[object_id] = entity.key
+                        continue
+                number_info = getattr(aioesphomeapi, "NumberInfo", None)
+                if number_info is not None and isinstance(entity, number_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id in ("bass", "treble"):
+                        self.audio_keys[object_id] = entity.key
+                        continue
+                text_info = getattr(aioesphomeapi, "TextSensorInfo", None)
+                if text_info is not None and isinstance(entity, text_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id == "bluetooth_audio":
+                        self.audio_keys[object_id] = entity.key
+                        continue
+                button_info = getattr(aioesphomeapi, "ButtonInfo", None)
+                if button_info is not None and isinstance(entity, button_info):
+                    object_id = (getattr(entity, "object_id", "") or "").casefold()
+                    if object_id in ("bluetooth_reconnect", "bluetooth_disconnect"):
+                        self.audio_keys[object_id] = entity.key
                         continue
                 if not isinstance(entity, aioesphomeapi.LightInfo):
                     continue
@@ -242,6 +280,27 @@ class RingService:
                 if isinstance(volume, (int, float)) and not isinstance(volume, bool) and math.isfinite(float(volume)):
                     updated["volume"] = max(0.0, min(1.0, float(volume)))
                 self.speaker = updated
+                self._revision += 1
+                self._condition.notify_all()
+            return
+        obj = next((o for o, k in self.audio_keys.items() if k == state_key), None)
+        if obj is not None:
+            value = getattr(state, "state", None)
+            with self._condition:
+                if obj == "bass":
+                    self.audio["bass"] = float(value)
+                elif obj == "treble":
+                    self.audio["treble"] = float(value)
+                elif obj == "speaker_eq":
+                    self.audio["eq"] = bool(value)
+                elif obj == "output_clone":
+                    self.audio["clone"] = bool(value)
+                elif obj == "audio_output":
+                    self.audio["audio_output"] = str(value)
+                elif obj == "bluetooth_pairing":
+                    self.audio["bluetooth_pairing"] = bool(value)
+                elif obj == "bluetooth_audio":
+                    self.audio["bluetooth_audio"] = str(value)
                 self._revision += 1
                 self._condition.notify_all()
             return
@@ -297,6 +356,41 @@ class RingService:
         state = self._wait_for_state(before, predicate)
         return state
 
+    def audio_snapshot(self) -> dict[str, Any]:
+        """Sound tuning + Bluetooth/routing state as one block for every
+        result. output_mode is derived: no speaker on the link is 'local';
+        a connected sink is 'external', or 'both' while output_clone is on."""
+        raw = str(self.audio.get("bluetooth_audio") or "").strip()
+        connected = bool(raw) and raw.lower() != "not connected"
+        clone = bool(self.audio.get("clone"))
+        mode = ("both" if clone else "external") if connected else "local"
+        return {
+            "bass": self.audio.get("bass"),
+            "treble": self.audio.get("treble"),
+            "eq": self.audio.get("eq"),
+            "clone": clone,
+            "audio_output": self.audio.get("audio_output"),
+            "bluetooth": {
+                "pairing": self.audio.get("bluetooth_pairing"),
+                "audio": raw or None,
+                "connected": connected,
+            },
+            "output_mode": mode,
+        }
+
+    def _wait_audio(self, before: int, predicate, timeout: float = 4.0) -> dict[str, Any]:
+        """Wait for the device to push a state that satisfies predicate:
+        state-changing calls are only reported once the Dot confirms them."""
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                if self._revision > before and predicate(self.audio):
+                    return dict(self.audio)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Echo Dot did not confirm the audio change.")
+                self._condition.wait(remaining)
+
     def _result(self, action: str, message: str, **fields: Any) -> dict[str, Any]:
         return {
             "ok": True,
@@ -310,6 +404,7 @@ class RingService:
             "device_connected": self.connected,
             "device_name": self.device_name,
             "available_effects": self.effects[:64],
+            "audio": self.audio_snapshot(),
             "message": message[:240],
             **fields,
         }
@@ -328,7 +423,13 @@ class RingService:
             if expected_muted is not None and bool(self.speaker.get("muted")) is not expected_muted:
                 return False
             return True
-        self._wait_for_state(before, predicate)
+        # A media-player command that lands on the value the device already
+        # reports produces no state push (nothing changed), so waiting for a
+        # new revision would time out even though the target state holds.
+        with self._condition:
+            already_satisfied = predicate(dict(self.speaker))
+        if not already_satisfied:
+            self._wait_for_state(before, predicate)
         return dict(self.speaker)
 
     def _arguments(self, text: str) -> dict[str, Any] | None:
@@ -443,6 +544,129 @@ class RingService:
                     raise RuntimeError("Echo Dot speaker is unavailable. Check its power and Wi-Fi, then retry once.")
                 await asyncio.to_thread(self.client.media_player_command, self.media_key, command=_media_command("STOP"))
                 return self._result(action, "The Echo Dot confirmed the stop request for its speaker.")
+            if action == "sound":
+                """Read {bass,treble,eq}, or apply any of them: the Nix Dev
+                speaker's own tone shelves (dB, 1 dB steps) and EQ switch."""
+                if not self.connected:
+                    raise RuntimeError("Echo Dot is offline. Check its power and Wi-Fi.")
+                wanted = {f: args[f] for f in ("bass", "treble", "eq") if f in args}
+                if not wanted:
+                    return self._result(action, "Current speaker tuning returned by the Echo Dot.")
+                with self._condition:
+                    before = self._revision
+                for field in ("bass", "treble"):
+                    if field not in wanted:
+                        continue
+                    if field not in self.audio_keys:
+                        raise RuntimeError("This device does not expose a %s control." % field)
+                    try:
+                        raw_value = float(wanted[field])
+                    except (TypeError, ValueError):
+                        raise ValueError("%s must be a number from -6 to 6 dB." % field)
+                    if not -6.0 <= raw_value <= 6.0:
+                        raise ValueError("%s must be from -6 to 6 dB." % field)
+                    value = float(round(raw_value))
+                    self.client.number_command(self.audio_keys[field], value)
+                    await asyncio.to_thread(
+                        self._wait_audio, before,
+                        lambda audio, f=field, v=value: audio.get(f) == v)
+                if "eq" in wanted:
+                    if "speaker_eq" not in self.audio_keys:
+                        raise RuntimeError("This device does not expose the Speaker EQ switch.")
+                    want = bool(wanted["eq"])
+                    self.client.switch_command(self.audio_keys["speaker_eq"], want)
+                    await asyncio.to_thread(
+                        self._wait_audio, before,
+                        lambda audio, w=want: audio.get("eq") is w)
+                return self._result(action, "The Echo Dot applied the requested speaker tuning.")
+            if action == "audio_output":
+                if "audio_output" not in self.audio_keys:
+                    raise RuntimeError("This device does not expose an audio output select.")
+                value = args.get("value")
+                if value is None:
+                    return self._result(action, "Current audio output returned by the Echo Dot.")
+                value = str(value)
+                if self.audio_output_options and value not in self.audio_output_options:
+                    raise ValueError("value must be one of: %s" % ", ".join(self.audio_output_options))
+                with self._condition:
+                    before = self._revision
+                self.client.select_command(self.audio_keys["audio_output"], value)
+                await asyncio.to_thread(
+                    self._wait_audio, before,
+                    lambda audio, v=value: audio.get("audio_output") == v)
+                return self._result(action, "The Echo Dot switched its audio output to %s." % value)
+            if action == "bluetooth":
+                """Read the A2DP source link, or act on it. Pairing makes the
+                Dot discoverable (connect a speaker while it is on; a
+                remembered one is chosen automatically when none pairs).
+                reconnect/disconnect settle asynchronously - they report
+                pending rather than confirming."""
+                if not self.connected:
+                    raise RuntimeError("Echo Dot is offline. Check its power and Wi-Fi.")
+                bt = args.get("bt")
+                if bt is None:
+                    return self._result(action, "Current Bluetooth link returned by the Echo Dot.")
+                if bt in ("pairing_on", "pairing_off"):
+                    if "bluetooth_pairing" not in self.audio_keys:
+                        raise RuntimeError("This device does not expose a Bluetooth pairing switch.")
+                    want = bt == "pairing_on"
+                    with self._condition:
+                        before = self._revision
+                    self.client.switch_command(self.audio_keys["bluetooth_pairing"], want)
+                    await asyncio.to_thread(
+                        self._wait_audio, before,
+                        lambda audio, w=want: audio.get("bluetooth_pairing") is w)
+                    return self._result(action, "Bluetooth pairing %s." % ("on - the Dot is discoverable" if want else "off"))
+                if bt in ("reconnect", "disconnect"):
+                    key_name = "bluetooth_%s" % bt
+                    if key_name not in self.audio_keys:
+                        raise RuntimeError("This device has no %s button." % key_name)
+                    self.client.button_command(self.audio_keys[key_name])
+                    pending = True
+                    message = "Bluetooth %s pressed; the link settles in a few seconds." % bt
+                    return self._result(action, message, pending=pending)
+                raise ValueError("bt must be pairing_on, pairing_off, reconnect or disconnect")
+            if action == "output_mode":
+                """Read, or set where music plays: local = Nix Dev only,
+                external = the connected speaker only, both = the stream
+                cloned across both at once. external/both need a speaker on
+                the link; without one the reconnect button is pressed and the
+                result reports pending."""
+                if not self.connected:
+                    raise RuntimeError("Echo Dot is offline. Check its power and Wi-Fi.")
+                mode = args.get("mode")
+                if mode is None:
+                    return self._result(action, "Current output routing returned by the Echo Dot.")
+                mode = str(mode).strip().casefold()
+                if mode not in ("local", "external", "both"):
+                    raise ValueError("mode must be local, external or both")
+                if "output_clone" not in self.audio_keys:
+                    raise RuntimeError("This firmware has no output routing switch (patched echod required).")
+                pending = False
+                snap = self.audio_snapshot()
+                want_clone = mode == "both"
+                if bool(snap.get("clone")) != want_clone:
+                    with self._condition:
+                        before = self._revision
+                    self.client.switch_command(self.audio_keys["output_clone"], want_clone)
+                    await asyncio.to_thread(
+                        self._wait_audio, before,
+                        lambda audio, w=want_clone: bool(audio.get("clone")) is w)
+                if mode == "local":
+                    if snap["bluetooth"]["connected"] and "bluetooth_disconnect" in self.audio_keys:
+                        self.client.button_command(self.audio_keys["bluetooth_disconnect"])
+                        pending = True
+                elif not snap["bluetooth"]["connected"]:
+                    # No speaker on the link yet: press reconnect for a remembered one.
+                    if "bluetooth_reconnect" in self.audio_keys:
+                        self.client.button_command(self.audio_keys["bluetooth_reconnect"])
+                    pending = True
+                settled = self.audio_snapshot()
+                pending = pending or settled["output_mode"] != mode
+                message = "Output routing requested: %s (now %s)." % (mode, settled["output_mode"])
+                if pending:
+                    message += " Bluetooth is still settling - read again in a few seconds."
+                return self._result(action, message, pending=pending)
         raise ValueError("Unsupported Echo Connect action.")
 
     @staticmethod
@@ -465,6 +689,10 @@ class RingService:
             "unmute": {"action"},
             "say": {"action", "text"},
             "stop_speaking": {"action"},
+            "sound": {"action", "bass", "treble", "eq"},
+            "audio_output": {"action", "value"},
+            "bluetooth": {"action", "bt"},
+            "output_mode": {"action", "mode"},
         }
         if action not in allowed:
             raise ValueError("Unsupported Echo Connect action")
@@ -492,6 +720,31 @@ class RingService:
             if not 1 <= len(text) <= 500:
                 raise ValueError("say text must be 1 to 500 characters")
             checked["text"] = text
+        elif action == "sound":
+            for field in ("bass", "treble"):
+                if field not in checked:
+                    continue
+                value = checked[field]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not -6 <= float(value) <= 6:
+                    raise ValueError("%s must be a number from -6 to 6 dB" % field)
+                checked[field] = float(round(float(value)))
+            if "eq" in checked and not isinstance(checked["eq"], bool):
+                raise ValueError("eq must be true or false")
+        elif action == "audio_output":
+            if "value" in checked:
+                value = str(checked["value"])
+                if value not in ("Automatic", "Internal speaker", "Headphones / AUX"):
+                    raise ValueError("value must be Automatic, Internal speaker or Headphones / AUX")
+                checked["value"] = value
+        elif action == "bluetooth":
+            if "bt" in checked and checked["bt"] not in ("pairing_on", "pairing_off", "reconnect", "disconnect"):
+                raise ValueError("bt must be pairing_on, pairing_off, reconnect or disconnect")
+        elif action == "output_mode":
+            if "mode" in checked:
+                mode = str(checked["mode"]).strip().casefold()
+                if mode not in ("local", "external", "both"):
+                    raise ValueError("mode must be local, external or both")
+                checked["mode"] = mode
         return checked
 
     async def handle(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
